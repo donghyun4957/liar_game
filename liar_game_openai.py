@@ -1,9 +1,10 @@
+from openai import OpenAI
 import os
 import re
 from collections import Counter
 import random
 import ollama
-
+# 'EEVE-Korean-10.8B'
 class LiarGame():
     def __init__(self):
         self.word_list = ['키위', '사과', '바나나']
@@ -11,9 +12,10 @@ class LiarGame():
     def select_word(self):
         main_word, sub_word = random.sample(self.word_list, 2)
         return main_word, sub_word
-# 'EEVE-Korean-10.8B'
+
 class PlayerBot():
     def __init__(self, id=0):
+        self.client = OpenAI()
         self.player_id = id
         self.identity = 'bot'
         self.is_done = False
@@ -21,7 +23,7 @@ class PlayerBot():
         self.word = None
         self.instruction = None
         self.chat_history = []
-        self.model = 'gpt-oss:20b'
+        self.model = 'gpt-4o-mini'
 
     def input_instruction(self):
         prompt = f"""
@@ -34,8 +36,7 @@ class PlayerBot():
         2. 너가 설명할 때는, 절대 제시어를 말하지 않고 한 문장으로 자연스럽게 설명해라.
         3. 너무 구체적으로 말하지 말고, 다른 플레이어가 이해할 수 있을 정도만 일반적으로 말해라.
         4. 너가 받은 단어만 기준으로 설명하되 절대 그 단어를 말해서는 안된다.
-        5. 답변은 한국어로 한다.
-        6. 설명 외의 불필요한 정보(예: 신뢰도, 투표 추천 등)는 절대로 작성을 금지한다.
+        5. 설명 외의 불필요한 정보(예: 신뢰도, 투표 추천 등)는 절대로 작성을 금지한다.
 
         [투표 규칙]
         1. 한 바퀴가 끝나면 누가 라이어인지 추리해야 한다.
@@ -53,13 +54,27 @@ class PlayerBot():
 
     def turn(self):
         print(f'{self.player_id}번 플레이어 봇님, 설명할 차례입니다. : ')
-        message = f"너가 받은 제시어 '{self.word}'를 말하지 않고 다른 플레이어가 이해할 정도로 한 문장으로 설명해줘."
+        message = f"너가 받은 제시어 '{self.word}'를 말하지 않고 다른 플레이어가 이해할 정도로 한국어 한 문장 설명해줘."
         self.chat_history.append({'role':'user', 'content':message})
-        response = ollama.chat(model=self.model, messages=self.chat_history)
-        bot_message = {"role": "user", "content": f'{self.player_id}번 플레이어는 이렇게 말했어: {response.message.content} 이 발언이 너가 받은 제시어와 비슷한지 판단해서 라이어인지 생각해봐.'}
-        self.chat_history.append({'role':'assistant', 'content':response.message.content})
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                *self.chat_history,
+            ],
+            response_format={
+                "type": "text"
+            },
+            temperature=1.0,
+            max_tokens=2048,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0
+        )
+        answer = response.choices[0].message.content
+        bot_message = {"role": "user", "content": f'{self.player_id}번 플레이어는 이렇게 말했어: {answer} 이 발언을 한 사람이 라이어일지 생각해봐.'}
+        self.chat_history.append({'role':'assistant', 'content':answer})
         
-        return bot_message, response.message.content
+        return bot_message, answer
     
     def done(self):
         self.is_done = True
@@ -68,19 +83,32 @@ class PlayerBot():
         self.is_vote_done = True
 
     def guess_liar(self, player_list):
-        print(f"{self.player_id}번 플레이어 봇님, 누가 라이어라고 생각하나요? (0 ~ {len(player_list)-1}): ")
         message = f"""
         이제 라이어를 맞출거야. 아래의 답변 규칙을 고려해서 라이어가 몇번 플레이어인지 선택해줘.
         [답변 규칙]
         1. 지금까지 대화를 참고해서 가장 수상한 플레이어 번호 하나를 선택해. (0-{len(player_list)-1} 중 하나)
-        2. 오직 0-{len(player_list)-1} 중 숫자 하나만 출력해. 예: "0" 또는 "3"
-        3. 자기 자신은 절대 선택하지 마
+        2. 오직 0-{len(player_list)-1} 중 숫자 하나만 출력해.
+        3. 너 자신은 절대 선택하지 마
         """
         self.chat_history.append({'role':'user', 'content':message})
-        response = ollama.chat(model=self.model, messages=self.chat_history)
-        self.chat_history.append({'role':'assistant', 'content':response.message.content})
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                *self.chat_history,
+            ],
+            response_format={
+                "type": "text"
+            },
+            temperature=1.0,
+            max_tokens=2048,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0
+        )
+        answer = response.choices[0].message.content
+        self.chat_history.append({'role':'assistant', 'content':answer})
 
-        match = re.search(r'\d+', response.message.content)
+        match = re.search(r'\d+', answer)
         if match:
             return int(match.group())  # 정수 변환
         else:
@@ -90,7 +118,6 @@ class PlayerBot():
         for i in range(len(bot_list)):
             if bot_list[i].player_id != self.player_id:
                 bot_list[i].chat_history.append(bot_message)
-
 
 class Player():
     def __init__(self, id):
@@ -104,9 +131,7 @@ class Player():
         self.word = word
 
     def turn(self, message):
-        print(f'{self.player_id}번 플레이어님, 설명할 차례입니다. : ')
-        # message = input()
-        bot_message = {"role": "user", "content": f'{self.player_id}번 플레이어는 이렇게 말했어.' + message}
+        bot_message = {"role": "user", "content": f'{self.player_id}번 플레이어는 이렇게 말했어: {message} 이 발언을 한 사람이 라이어일지 생각해봐.'}
         return bot_message, message
     
     def done(self):
